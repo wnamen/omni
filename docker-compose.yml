@@ -1,0 +1,19 @@
+services:
+  omniparser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omniparser
+    ports:
+      - "8001:8001"
+    environment:
+      - PYTHONPATH=/app/OmniParser
+    volumes:
+      - ./server:/app/server
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      interval: 30s
+      timeout: 30s
+      retries: 20
+      start_period: 300s

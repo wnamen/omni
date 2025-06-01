@@ -1,0 +1,55 @@
+# Python backend for OmniParser service
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    wget \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements.txt first
+COPY requirements.txt ./
+
+# Install dependencies
+RUN pip install -r requirements.txt --no-cache-dir
+
+# Clone OmniParser repository
+RUN git clone https://github.com/microsoft/OmniParser.git
+
+# Copy server application
+COPY server/ ./server/
+
+# Copy .env file if it exists (optional)
+COPY .env* ./
+
+# Install OmniParser requirements
+RUN pip install -r OmniParser/requirements.txt
+
+# Install transformers
+RUN pip install transformers==4.49.0
+
+# Create weights directory
+RUN mkdir -p weights
+
+# Add OmniParser to Python path
+ENV PYTHONPATH="${PYTHONPATH}:/app/OmniParser"
+
+# Download model weights (pre-download during build)
+RUN python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='microsoft/OmniParser-v2.0', local_dir='weights')"
+
+# Pre-download Florence-2-base model
+RUN python -c "from transformers import AutoProcessor, AutoModelForCausalLM; processor = AutoProcessor.from_pretrained('microsoft/Florence-2-base', trust_remote_code=True); model = AutoModelForCausalLM.from_pretrained('microsoft/Florence-2-base', torch_dtype='auto', trust_remote_code=True)"
+
+# Confirm all models are downloaded and accessible
+RUN python -c "import os; print('OmniParser-v2.0 model weights exist:', os.path.exists('weights/icon_detect/model.pt')); print('Florence-2-base model downloaded successfully')"
+
+# Expose the port the app runs on
+EXPOSE 8001
+
+# Command to run the application with auto-reload for development
+CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8001", "--reload"] 
