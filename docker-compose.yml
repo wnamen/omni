@@ -13,11 +13,16 @@ services:
     restart: unless-stopped
     deploy:
       resources:
+        limits:
+          memory: 8G
         reservations:
+          memory: 4G
           devices:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    mem_limit: 8g
+    memswap_limit: 12g
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:2171/api/health"]
       interval: 30s

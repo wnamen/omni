@@ -2,6 +2,7 @@ import logging
 import sys
 import time
 import os
+import gc
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +37,13 @@ caption_model_processor = None
 # Image processing configuration
 MAX_IMAGE_SIZE = 1920  # Maximum width or height
 MAX_TOTAL_PIXELS = 1920 * 1280  # Maximum total pixels (about 2.4MP)
+
+
+def cleanup_memory():
+    """Explicitly clean up memory and force garbage collection."""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
 
 
 def create_dtype_safe_model_wrapper(model, processor):
@@ -167,6 +175,9 @@ async def startup_event():
         
         logger.info("All models initialized successfully")
         
+        # Clean up after model loading
+        cleanup_memory()
+        
     except Exception as e:
         logger.error(f"Error initializing models: {str(e)}")
         # Don't raise the exception to allow the server to start anyway
@@ -184,7 +195,11 @@ async def health_check():
     return {
         "status": "ok",
         "models_loaded": models_loaded,
-        "device": device
+        "device": device,
+        "memory_info": {
+            "cuda_memory_allocated": torch.cuda.memory_allocated() if torch.cuda.is_available() else 0,
+            "cuda_memory_reserved": torch.cuda.memory_reserved() if torch.cuda.is_available() else 0
+        }
     }
 
 
@@ -195,7 +210,13 @@ class ImageRequest(BaseModel):
 @app.post("/api/parse")
 async def parse(request: ImageRequest):
     """Parse a base64 encoded image using OmniParser's image processing pipeline."""
-    logger.info("🔥 PARSE ENDPOINT CALLED - NEW CODE VERSION WITH RESIZING! 🔥")
+    logger.info("🔥 PARSE ENDPOINT CALLED 🔥")
+    
+    # Variables to track for cleanup
+    image = None
+    image_data = None
+    temp_path = None
+    
     try:
         # Get the base64 image from request body
         base64_image = request.image
@@ -203,28 +224,45 @@ async def parse(request: ImageRequest):
         if not base64_image:
             raise HTTPException(status_code=400, detail="No image provided")
         
-        # Decode base64 image
+        # Decode base64 image (minimize memory by not storing intermediate variables)
         import base64
         from io import BytesIO
+        
         image_data = base64.b64decode(base64_image)
         image = Image.open(BytesIO(image_data))
+        
+        # Clear base64 data immediately to free memory
+        del base64_image
         
         logger.info(f"🖼️ Original image loaded: {image.size} pixels")
         
         # Resize image if it's too large to prevent memory issues
         original_size = image.size
-        image, was_resized = resize_image_if_needed(image)
+        resized_image, was_resized = resize_image_if_needed(image)
         
+        # If resized, replace original with resized version to save memory
         if was_resized:
-            logger.info(f"Image resized from {original_size} to {image.size} to prevent memory issues")
+            logger.info(f"Image resized from {original_size} to {resized_image.size} to prevent memory issues")
+            image.close()  # Explicitly close original image
+            image = resized_image
+        
+        # Store processed size before closing the image
+        processed_size = image.size
+        
+        # Clear image_data now that we have the PIL image
+        del image_data
 
         from util.utils import get_som_labeled_img, check_ocr_box
         
-        # Save temporarily for processing
-        temp_path = f"temp_{int(time.time())}.png"
+        # Save temporarily for processing (using a more unique filename)
+        temp_path = f"temp_{int(time.time() * 1000)}_{os.getpid()}.png"
         image.save(temp_path)
+        
+        # Close the PIL image to free memory since we have the file
+        image.close()
+        
         BOX_TRESHOLD = 0.05
-        box_overlay_ratio = max(image.size) / 3200
+        box_overlay_ratio = max(original_size) / 3200
         draw_bbox_config = {
             'text_scale': 0.8 * box_overlay_ratio,
             'text_thickness': max(int(2 * box_overlay_ratio), 1),
@@ -246,6 +284,9 @@ async def parse(request: ImageRequest):
             text, ocr_bbox = ocr_bbox_rslt
             ocr_time = time.time() - start_time
             
+            # Clear intermediate OCR results we don't need
+            del ocr_bbox_rslt, is_goal_filtered
+            
             # Process with OmniParser
             start_time = time.time()
             dino_labeled_img, label_coordinates, parsed_content_list = get_som_labeled_img(
@@ -260,22 +301,34 @@ async def parse(request: ImageRequest):
                 use_local_semantics=True,
                 iou_threshold=0.7,
                 scale_img=False,
-                batch_size=128
+                batch_size=64  # Reduced batch size to save memory
             )
             parsing_time = time.time() - start_time
             
-            # Convert to dataframe for standardized output
-            import pandas as pd
-            df = pd.DataFrame(parsed_content_list)
-            df['ID'] = range(len(df))
+            # Clear intermediate variables
+            del text, ocr_bbox, label_coordinates
+            
+            # Convert to simple list of dicts instead of DataFrame to save memory
+            elements = []
+            for i, item in enumerate(parsed_content_list):
+                if isinstance(item, dict):
+                    element = item.copy()
+                    element['ID'] = i
+                    elements.append(element)
+                else:
+                    # Handle non-dict items
+                    elements.append({'ID': i, 'content': str(item)})
+            
+            # Clear parsed_content_list immediately
+            del parsed_content_list
             
             # Prepare response with metadata about resizing
             response = {
                 "img": dino_labeled_img,  # Base64 encoded image
-                "elements": df.to_dict(orient="records"),
+                "elements": elements,
                 "metadata": {
                     "original_size": original_size,
-                    "processed_size": image.size,
+                    "processed_size": processed_size,
                     "was_resized": was_resized
                 },
                 "timing": {
@@ -285,13 +338,34 @@ async def parse(request: ImageRequest):
                 }
             }
             
+            # Clear large variables before returning
+            del elements, dino_labeled_img
+            
             return response
             
         finally:
             # Clean up temporary file
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                    logger.info(f"Cleaned up temporary file: {temp_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Could not remove temporary file {temp_path}: {cleanup_error}")
                 
     except Exception as e:
         logger.exception(f"Error parsing image: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
+    
+    finally:
+        # Explicit cleanup of remaining variables
+        try:
+            if image:
+                image.close()
+            if 'image_data' in locals():
+                del image_data
+        except:
+            pass
+        
+        # Force garbage collection after each request
+        cleanup_memory()
+        logger.info("Memory cleanup completed")
