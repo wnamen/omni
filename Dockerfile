@@ -1,5 +1,5 @@
 # Python backend for OmniParser service
-FROM python:3.12-slim
+FROM pytorch/pytorch:2.2.1-cuda12.1-cudnn8-runtime
 
 WORKDIR /app
 
@@ -49,7 +49,7 @@ RUN python -c "from transformers import AutoProcessor, AutoModelForCausalLM; pro
 RUN python -c "import os; print('OmniParser-v2.0 model weights exist:', os.path.exists('weights/icon_detect/model.pt')); print('Florence-2-base model downloaded successfully')"
 
 # Expose the port the app runs on
-EXPOSE 8001
+EXPOSE 2171
 
 # Command to run the application with auto-reload for development
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8001", "--reload"] 
+CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "2171", "--reload"] 

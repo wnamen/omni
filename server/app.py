@@ -38,6 +38,39 @@ MAX_IMAGE_SIZE = 1920  # Maximum width or height
 MAX_TOTAL_PIXELS = 1920 * 1280  # Maximum total pixels (about 2.4MP)
 
 
+def create_dtype_safe_model_wrapper(model, processor):
+    """Create a wrapper that ensures consistent dtype handling for Florence-2 model."""
+    class DTypeSafeModelWrapper:
+        def __init__(self, model, processor):
+            self.model = model
+            self.processor = processor
+            
+        def generate(self, **kwargs):
+            # Ensure pixel values are in the same dtype as the model, but preserve integer tensors
+            for key, value in kwargs.items():
+                if isinstance(value, torch.Tensor):
+                    # Only convert continuous tensors like pixel_values to match model dtype
+                    # Keep discrete tensors like input_ids and attention_mask as integers
+                    if key in ['pixel_values'] and value.dtype.is_floating_point:
+                        target_dtype = next(self.model.parameters()).dtype
+                        if value.dtype != target_dtype:
+                            logger.info(f"Converting {key} from {value.dtype} to {target_dtype}")
+                            kwargs[key] = value.to(target_dtype)
+                    elif key in ['input_ids', 'attention_mask'] and not value.dtype.is_floating_point:
+                        # Ensure these remain as integers (typically Long)
+                        if value.dtype != torch.long:
+                            logger.info(f"Converting {key} to long (integer) type")
+                            kwargs[key] = value.to(torch.long)
+            
+            return self.model.generate(**kwargs)
+            
+        def __getattr__(self, name):
+            # Delegate other attributes to the original model
+            return getattr(self.model, name)
+    
+    return DTypeSafeModelWrapper(model, processor)
+
+
 def resize_image_if_needed(image: Image.Image) -> tuple[Image.Image, bool]:
     """
     Resize image if it's too large to prevent memory issues.
@@ -107,7 +140,8 @@ async def startup_event():
         logger.info("Loading YOLO model...")
         model_path = os.path.join(os.getcwd(), 'weights/icon_detect/model.pt')
         if os.path.exists(model_path):
-            yolo_model = get_yolo_model(model_path=model_path).to(device)
+            yolo_model = get_yolo_model(model_path=model_path)
+            yolo_model = yolo_model.float().to(device)
             logger.info(f"YOLO model loaded successfully on {device}")
         else:
             logger.error(f"YOLO model not found at path: {model_path}")
@@ -117,9 +151,18 @@ async def startup_event():
         logger.info("Loading Florence-2 caption model...")
         processor = AutoProcessor.from_pretrained("microsoft/Florence-2-base", trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(
-            "microsoft/Florence-2-base", torch_dtype=torch.float32, trust_remote_code=True
-        ).to(device)
-        caption_model_processor = {'model': model, 'processor': processor}
+            "microsoft/Florence-2-base",
+            torch_dtype=torch.float32,
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
+        )
+        # Ensure model and all its parameters are in float32
+        model = model.float()
+        model = model.to(device)
+        
+        # Create wrapper to handle dtype issues
+        wrapped_model = create_dtype_safe_model_wrapper(model, processor)
+        caption_model_processor = {'model': wrapped_model, 'processor': processor}
         logger.info("Caption model loaded successfully")
         
         logger.info("All models initialized successfully")
@@ -228,7 +271,7 @@ async def parse(request: ImageRequest):
             
             # Prepare response with metadata about resizing
             response = {
-                "labeled_image": dino_labeled_img,  # Base64 encoded image
+                "img": dino_labeled_img,  # Base64 encoded image
                 "elements": df.to_dict(orient="records"),
                 "metadata": {
                     "original_size": original_size,

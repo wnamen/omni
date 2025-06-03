@@ -90,7 +90,7 @@ docker stats omniparser-container
 
 The service is configured to:
 
-- Run on port 8001
+- Run on port 2171
 - Auto-restart unless stopped
 - Include health checks
 - Mount a results directory for persistent output

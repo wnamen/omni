@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 # Configuration
-API_BASE_URL = "http://localhost:8001"
+API_BASE_URL = "http://localhost:2171"
 IMAGE_PATH = "ios.png"
 
 
