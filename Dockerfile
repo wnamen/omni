@@ -19,26 +19,14 @@ COPY requirements.txt ./
 # Install dependencies
 RUN pip install -r requirements.txt --no-cache-dir
 
-# Clone OmniParser repository
-RUN git clone https://github.com/microsoft/OmniParser.git
-
 # Copy server application
 COPY server/ ./server/
 
 # Copy .env file if it exists (optional)
 COPY .env* ./
 
-# Install OmniParser requirements
-RUN pip install -r OmniParser/requirements.txt
-
-# Install transformers
-RUN pip install transformers==4.49.0
-
 # Create weights directory
 RUN mkdir -p weights
-
-# Add OmniParser to Python path
-ENV PYTHONPATH="${PYTHONPATH}:/app/OmniParser"
 
 # Set Python optimization flags
 ENV PYTHONOPTIMIZE=1
@@ -60,4 +48,4 @@ RUN find /app -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 EXPOSE 2171
 
 # Command to run the application with auto-reload, excluding problematic directories
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "2171", "--reload", "--reload-exclude", "*/__pycache__/*", "--reload-exclude", "*/.*"] 
+CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "2171"] 

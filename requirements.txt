@@ -2,5 +2,13 @@ fastapi
 uvicorn
 python-dotenv
 torch
-transformers
+transformers==4.49.0
 Pillow
+numpy==1.26.4
+supervision==0.18.0
+easyocr
+paddlepaddle
+paddleocr==2.7.0.3
+timm
+einops==0.8.0
+ultralytics==8.3.70

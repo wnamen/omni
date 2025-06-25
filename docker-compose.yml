@@ -10,22 +10,19 @@ services:
       - PYTHONPATH=/app/OmniParser
     volumes:
       - ./server:/app/server
-    restart: unless-stopped
+    restart: always
+    mem_limit: 14g
+    memswap_limit: 16g
     deploy:
       resources:
-        limits:
-          memory: 8G
         reservations:
-          memory: 4G
           devices:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    mem_limit: 8g
-    memswap_limit: 12g
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:2171/api/health"]
-      interval: 30s
-      timeout: 30s
-      retries: 20
+      interval: 60s
+      timeout: 60s
+      retries: 5
       start_period: 300s
